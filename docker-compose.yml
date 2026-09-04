@@ -1,0 +1,109 @@
+name: llm
+
+services:
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: llm-livekit
+    restart: unless-stopped
+    environment:
+      LIVEKIT_CONFIG: |
+        port: 7880
+        log_level: info
+        keys:
+          ${LIVEKIT_API_KEY:?set LIVEKIT_API_KEY in .env}: ${LIVEKIT_API_SECRET:?set LIVEKIT_API_SECRET in .env}
+        rtc:
+          tcp_port: 7881
+          udp_port: 7882
+          use_external_ip: true
+        turn:
+          enabled: true
+          domain: ${PUBLIC_TURN_HOST:?set PUBLIC_TURN_HOST in .env}
+          udp_port: 443
+    ports:
+      - "7880:7880/tcp"
+      - "7881:7881/tcp"
+      - "7882:7882/udp"
+      - "443:443/udp"
+    networks: [llm-net]
+
+  whisper:
+    image: fedirz/faster-whisper-server:latest-cpu
+    container_name: llm-whisper
+    restart: unless-stopped
+    environment:
+      WHISPER__MODEL: ${WHISPER_MODEL:-Systran/faster-whisper-small.en}
+      WHISPER__COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-int8}
+    volumes:
+      - whisper-cache:/root/.cache/huggingface
+    networks: [llm-net]
+
+  kokoro:
+    image: ghcr.io/remsky/kokoro-fastapi-cpu:latest
+    container_name: llm-kokoro
+    restart: unless-stopped
+    environment:
+      API_LOG_LEVEL: INFO
+      ONNX_NUM_THREADS: "4"
+      ONNX_INTER_OP_THREADS: "2"
+      ONNX_EXECUTION_MODE: parallel
+      ONNX_OPTIMIZATION_LEVEL: all
+      ONNX_MEMORY_PATTERN: "true"
+    networks: [llm-net]
+
+  voice-agent:
+    build: ./source/voice-agent
+    image: llm-voice-agent:local
+    container_name: llm-voice-agent
+    restart: unless-stopped
+    depends_on: [livekit, whisper, kokoro]
+    environment:
+      LIVEKIT_URL: ws://livekit:7880
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:?set LIVEKIT_API_KEY in .env}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:?set LIVEKIT_API_SECRET in .env}
+      WHISPER_BASE_URL: http://whisper:8000/v1
+      WHISPER_MODEL: ${WHISPER_MODEL:-Systran/faster-whisper-small.en}
+      KOKORO_BASE_URL: http://kokoro:8880/v1
+      KOKORO_MODEL: ${KOKORO_MODEL:-kokoro}
+      KOKORO_VOICE: ${KOKORO_VOICE:-af_heart}
+      QWEN_BASE_URL: ${QWEN_BASE_URL:?set QWEN_BASE_URL in .env}
+      QWEN_API_KEY: ${QWEN_API_KEY:?set QWEN_API_KEY in .env}
+      QWEN_MODEL: ${QWEN_MODEL:-qwen3.6-35b}
+      KAGI_API_KEY: ${KAGI_API_KEY:?set KAGI_API_KEY in .env}
+      LOCAL_TIMEZONE: ${LOCAL_TIMEZONE:-America/New_York}
+      VAD_ACTIVATION_THRESHOLD: ${VAD_ACTIVATION_THRESHOLD:-0.65}
+      VAD_MIN_SPEECH_DURATION: ${VAD_MIN_SPEECH_DURATION:-0.20}
+      VAD_MIN_SILENCE_DURATION: ${VAD_MIN_SILENCE_DURATION:-0.50}
+      VAD_PREFIX_PADDING_DURATION: ${VAD_PREFIX_PADDING_DURATION:-0.20}
+      INTERRUPTION_MIN_DURATION: ${INTERRUPTION_MIN_DURATION:-0.50}
+      INTERRUPTION_MIN_WORDS: ${INTERRUPTION_MIN_WORDS:-1}
+      FALSE_INTERRUPTION_TIMEOUT: ${FALSE_INTERRUPTION_TIMEOUT:-0.80}
+    networks: [llm-net]
+
+  web-ui:
+    build: ./source/web-ui
+    image: llm-web-ui:local
+    container_name: llm-web-ui
+    restart: unless-stopped
+    depends_on: [livekit, voice-agent]
+    environment:
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:?set LIVEKIT_API_KEY in .env}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:?set LIVEKIT_API_SECRET in .env}
+      PUBLIC_UI_HOST: ${PUBLIC_UI_HOST:?set PUBLIC_UI_HOST in .env}
+      PUBLIC_RTC_HOST: ${PUBLIC_RTC_HOST:?set PUBLIC_RTC_HOST in .env}
+      PUBLIC_TURN_HOST: ${PUBLIC_TURN_HOST:?set PUBLIC_TURN_HOST in .env}
+    ports:
+      - "8088:8080/tcp"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks: [llm-net]
+
+networks:
+  llm-net:
+    driver: bridge
+
+volumes:
+  whisper-cache:

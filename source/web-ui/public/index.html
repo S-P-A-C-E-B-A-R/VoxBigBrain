@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>VoxBigBrain</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main id="app">
+    <header><h1>VoxBigBrain</h1><div class="subtitle">Local LLM speech terminal</div><div id="status">Initializing...</div></header>
+    <div id="controls"><button id="connect" disabled>Connect</button><button id="disconnect" disabled>Disconnect</button><button id="mute" disabled>Mute</button><button id="clear">Clear conversation</button></div>
+    <section id="conversationPanel"><div class="label">Conversation</div><div id="transcript"><div id="emptyTranscript">Speech transcription will appear here.</div></div></section>
+    <details id="logPanel"><summary>Event Log</summary><div id="log"></div></details>
+    <footer><div id="sessionMeta">No active session</div><div id="transportMeta">Web interface</div></footer>
+  </main>
+  <script src="/livekit-client.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

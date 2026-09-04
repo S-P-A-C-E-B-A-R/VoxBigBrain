@@ -1,0 +1,26 @@
+import os
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class Config:
+    whisper_base_url: str = os.environ["WHISPER_BASE_URL"]
+    whisper_model: str = os.environ["WHISPER_MODEL"]
+    kokoro_base_url: str = os.environ["KOKORO_BASE_URL"]
+    kokoro_model: str = os.environ["KOKORO_MODEL"]
+    kokoro_voice: str = os.environ["KOKORO_VOICE"]
+    qwen_base_url: str = os.environ["QWEN_BASE_URL"]
+    qwen_api_key: str = os.environ["QWEN_API_KEY"]
+    qwen_model: str = os.environ["QWEN_MODEL"]
+    kagi_api_key: str = os.environ["KAGI_API_KEY"]
+    timezone: str = os.environ.get("LOCAL_TIMEZONE", "America/New_York")
+    vad_activation_threshold: float = float(os.getenv("VAD_ACTIVATION_THRESHOLD", "0.65"))
+    vad_min_speech_duration: float = float(os.getenv("VAD_MIN_SPEECH_DURATION", "0.20"))
+    vad_min_silence_duration: float = float(os.getenv("VAD_MIN_SILENCE_DURATION", "0.50"))
+    vad_prefix_padding_duration: float = float(os.getenv("VAD_PREFIX_PADDING_DURATION", "0.20"))
+    interruption_min_duration: float = float(os.getenv("INTERRUPTION_MIN_DURATION", "0.50"))
+    interruption_min_words: int = int(os.getenv("INTERRUPTION_MIN_WORDS", "1"))
+    false_interruption_timeout: float = float(os.getenv("FALSE_INTERRUPTION_TIMEOUT", "0.80"))
+
+
+config = Config()
