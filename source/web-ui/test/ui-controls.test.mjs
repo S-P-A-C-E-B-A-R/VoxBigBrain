@@ -26,3 +26,10 @@ test("uses accessible compact icon controls and persisted sound volume", () => {
   assert.match(app, /Math\.min\(volume \* uiSoundVolume, \.18\)/);
   assert.match(css, /\.icon-button \{ width:44px; min-width:44px; height:44px/);
 });
+
+test("uses the octave-raised thinking pattern with existing timing and volume scaling", () => {
+  assert.match(app, /\[\[660, 0\], \[1240, \.135\], \[940, \.27\]\]/);
+  assert.match(app, /tone\(frequency, \.1, delay, \.8\)/);
+  assert.match(app, /}, 1700\)/);
+  assert.match(app, /}, 120\)/);
+});
