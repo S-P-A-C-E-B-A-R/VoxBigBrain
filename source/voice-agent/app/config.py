@@ -6,6 +6,12 @@ from dataclasses import dataclass
 class Config:
     whisper_base_url: str = os.environ["WHISPER_BASE_URL"]
     whisper_model: str = os.environ["WHISPER_MODEL"]
+    whisper_streaming_enabled: bool = os.getenv("WHISPER_STREAMING_ENABLED", "true").lower() == "true"
+    whisper_ws_url: str = os.getenv("WHISPER_WS_URL", "ws://whisper:8000/v1/audio/transcriptions")
+    whisper_language: str = os.getenv("WHISPER_LANGUAGE", "en")
+    whisper_temperature: float = float(os.getenv("WHISPER_TEMPERATURE", "0.0"))
+    whisper_vad_filter: bool = os.getenv("WHISPER_VAD_FILTER", "false").lower() == "true"
+    whisper_ws_finalization_seconds: float = float(os.getenv("WHISPER_WS_FINALIZATION_SECONDS", "60"))
     kokoro_base_url: str = os.environ["KOKORO_BASE_URL"]
     kokoro_model: str = os.environ["KOKORO_MODEL"]
     kokoro_voice: str = os.environ["KOKORO_VOICE"]

@@ -11,6 +11,7 @@ from livekit.plugins import openai, silero
 from .config import config
 from .prompts import current_time_context, instructions
 from .telemetry import install_tool_telemetry
+from .whisper_streaming import FasterWhisperLiveSTT, WhisperLiveOptions
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -41,29 +42,31 @@ def log_stt_metrics(metrics) -> None:
     )
 
 
+def make_stt(speech_vad):
+    if config.whisper_streaming_enabled:
+        return FasterWhisperLiveSTT(
+            options=WhisperLiveOptions(config.whisper_ws_url, config.whisper_model, config.whisper_language, config.whisper_temperature, config.whisper_vad_filter, finalization_seconds=config.whisper_ws_finalization_seconds),
+            speech_vad=speech_vad,
+        )
+    whisper_stt = openai.STT(model=config.whisper_model, base_url=config.whisper_base_url, api_key="not-needed", language=config.whisper_language)
+    return stt.StreamAdapter(stt=whisper_stt, vad=speech_vad)
+
+
 @server.rtc_session(agent_name="llm-voice")
 async def voice_session(ctx: agents.JobContext):
     time_context = current_time_context(config.timezone)
     logger.info("New voice session room=%s date=%s time=%s timezone=%s", ctx.room.name, time_context["date"], time_context["time"], time_context["timezone"])
     logger.info("Services whisper=%s qwen=%s kokoro=%s mcp=kagi enabled", config.whisper_base_url, config.qwen_base_url, config.kokoro_base_url)
-    # The adapter and AgentSession share this VAD configuration. The adapter gates
-    # non-streaming faster-whisper; the session uses it for turn and barge-in state.
+    # The streaming adapter and AgentSession share Silero settings. The adapter
+    # forwards only Silero-approved frames; the session drives turn and barge-in state.
     vad = silero.VAD.load(
         activation_threshold=config.vad_activation_threshold,
         min_speech_duration=config.vad_min_speech_duration,
         min_silence_duration=config.vad_min_silence_duration,
         prefix_padding_duration=config.vad_prefix_padding_duration,
     )
-    whisper_stt = openai.STT(
-        model=config.whisper_model,
-        base_url=config.whisper_base_url,
-        api_key="not-needed",
-        language="en",
-    )
-    # faster-whisper only recognizes complete buffers. StreamAdapter discards VAD
-    # non-speech and sends completed speech frames to its recognize() method.
-    gated_stt = stt.StreamAdapter(stt=whisper_stt, vad=vad)
-    gated_stt.on("metrics_collected", log_stt_metrics)
+    active_stt = make_stt(vad)
+    active_stt.on("metrics_collected", log_stt_metrics)
     participant = await ctx.wait_for_participant()
     identity = participant.identity
     headers = {"Authorization": f"Bearer {config.internal_agent_secret}"}
@@ -76,7 +79,7 @@ async def voice_session(ctx: agents.JobContext):
     for message in restored["messages"]:
         chat_ctx.add_message(role=message["role"], content=message["content"], id=message["id"], created_at=message["created_at"] / 1000)
     session = AgentSession(
-        stt=gated_stt,
+        stt=active_stt,
         llm=openai.LLM(model=config.qwen_model, base_url=config.qwen_base_url, api_key=config.qwen_api_key),
         tts=openai.TTS(model=config.kokoro_model, voice=config.kokoro_voice, base_url=config.kokoro_base_url, api_key="not-needed", response_format="wav"),
         vad=vad,
@@ -111,7 +114,7 @@ if __name__ == "__main__":
         "Starting llm-voice; Kagi MCP enabled; timezone=%s; "
         "vad activation_threshold=%.2f min_speech_duration=%.2fs "
         "min_silence_duration=%.2fs prefix_padding_duration=%.2fs; "
-        "interruption min_duration=%.2fs min_words=%d false_timeout=%.2fs",
+        "interruption min_duration=%.2fs min_words=%d false_timeout=%.2fs; whisper streaming=%s temperature=%.1f vad_filter=%s",
         config.timezone,
         config.vad_activation_threshold,
         config.vad_min_speech_duration,
@@ -120,5 +123,8 @@ if __name__ == "__main__":
         config.interruption_min_duration,
         config.interruption_min_words,
         config.false_interruption_timeout,
+        config.whisper_streaming_enabled,
+        config.whisper_temperature,
+        config.whisper_vad_filter,
     )
     agents.cli.run_app(server)

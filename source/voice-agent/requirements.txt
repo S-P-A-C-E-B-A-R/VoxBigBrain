@@ -1,1 +1,4 @@
-livekit-agents[openai,silero,mcp]~=1.7
+aiohttp>=3.10,<4
+livekit-agents[mcp]==1.7.1
+livekit-plugins-openai==1.7.1
+livekit-plugins-silero==1.7.1

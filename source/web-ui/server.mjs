@@ -27,7 +27,7 @@ function configFromEnv(env = process.env) {
     sessionTtlMs: Number(env.SESSION_TTL_HOURS || 168) * 3600000,
     contextMaxMessages: Number(env.CHAT_CONTEXT_MAX_MESSAGES || 50), loginAttempts: Number(env.LOGIN_RATE_LIMIT_ATTEMPTS || 10),
     loginWindowMs: Number(env.LOGIN_RATE_LIMIT_WINDOW_MINUTES || 15) * 60000, maxVoiceSessions: Number(env.MAX_ACTIVE_VOICE_SESSIONS_PER_USER || 2),
-    voiceRateLimit: Number(env.VOICE_SESSION_RATE_LIMIT_PER_MINUTE || 10),
+    voiceRateLimit: Number(env.VOICE_SESSION_RATE_LIMIT_PER_MINUTE || 10), voiceSessionTtlMs: Number(env.VOICE_SESSION_TTL_MINUTES || 10) * 60000,
     secureCookies: env.NODE_ENV === "production",
   };
 }
@@ -136,10 +136,10 @@ export function createApp(overrides = {}) {
     db.prepare("UPDATE voice_sessions SET revoked_at = ? WHERE expires_at <= ?").run(timestamp(), timestamp());
     const active = db.prepare("SELECT COUNT(*) AS count FROM voice_sessions WHERE user_id = ? AND revoked_at IS NULL AND expires_at > ?").get(req.auth.user_id, timestamp()).count;
     if (active >= config.maxVoiceSessions) return res.status(429).json({ error: "Maximum active voice sessions reached" });
-    const id = newId(), identity = `voice-${newId()}`, room = `voice-${newId()}`, expiresAt = timestamp() + 60 * 60000;
+    const id = newId(), identity = `voice-${newId()}`, room = `voice-${newId()}`, expiresAt = timestamp() + config.voiceSessionTtlMs;
     db.prepare("INSERT INTO voice_sessions (id, user_id, conversation_id, room, runtime_identity, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(id, req.auth.user_id, conversationId, room, identity, timestamp(), expiresAt);
     runtimeHistory.set(id, []);
-    const token = new AccessToken(config.apiKey, config.apiSecret, { identity, ttl: Math.max(1, Math.floor((req.auth.expires_at - timestamp()) / 1000)) });
+    const token = new AccessToken(config.apiKey, config.apiSecret, { identity, ttl: Math.max(1, Math.floor((Math.min(req.auth.expires_at, expiresAt) - timestamp()) / 1000)) });
     token.addGrant({ roomJoin: true, room, canPublish: true, canSubscribe: true }); token.roomConfig = new RoomConfiguration({ agents: [new RoomAgentDispatch({ agentName })] });
     res.json({ token: await token.toJwt(), room, identity, voiceSessionId: id, agent: agentName, url: `wss://${config.rtcHost}` });
   });

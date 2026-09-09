@@ -11,7 +11,7 @@ Everything below (and in this repo) is unapologetically vibecoded. Expect vibes,
 ## What It Does
 
 - Provides browser and iPad-friendly two-way voice conversations over LiveKit.
-- Uses Silero VAD to gate low-information audio before faster-whisper STT inference.
+- Uses Silero VAD to gate low-information audio before faster-whisper streaming STT inference.
 - Sends text to a local OpenAI-compatible Qwen endpoint and speaks replies through Kokoro.
 - Supports interruption, false-interruption recovery, streamed transcripts, agent state indicators, and text input/output.
 - Exposes the Kagi MCP `kagi_search_fetch` tool with privacy-preserving lifecycle telemetry.
@@ -30,7 +30,7 @@ Browser / iPad / remote client
      Silero VAD (shared configuration)
           |
           v
- StreamAdapter -> faster-whisper STT
+  custom streaming STT -> faster-whisper WebSocket
           |
           v
        Qwen-compatible LLM <---- Kagi MCP / future narrow tools
@@ -48,7 +48,7 @@ The voice agent, Whisper, and Kokoro use Docker-internal DNS. Qwen remains an ex
 
 - **LiveKit**: self-hosted rooms, signaling, ICE, and TURN.
 - **Silero VAD**: speech detection for STT gating and barge-in state.
-- **faster-whisper**: CPU OpenAI-compatible transcription server with a persistent Hugging Face cache.
+- **faster-whisper**: CPU OpenAI-compatible transcription server with a persistent Hugging Face cache and live WebSocket path.
 - **Qwen**: local reasoning layer through an OpenAI-compatible API.
 - **Kokoro**: CPU text-to-speech server.
 - **Kagi MCP**: optional web search through a single allow-listed tool.
@@ -100,6 +100,18 @@ Required deployment settings include `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `P
 
 The Whisper model, Qwen model, Kokoro voice, timezone, VAD thresholds, and interruption settings are all documented in `.env.sample` and can be adjusted without rebuilding the image.
 
+## Streaming Whisper
+
+`WHISPER_STREAMING_ENABLED=true` is the default. The voice agent opens `WHISPER_WS_URL` when Silero confirms speech, downmixes when necessary, resamples to 16 kHz, and sends only signed 16-bit little-endian mono PCM frames. It publishes the server's cumulative LocalAgreement text as interim LiveKit events and emits the last cumulative result as the final event. The browser replaces one transcript bubble rather than adding one per update.
+
+The deployed `fedirz/faster-whisper-server` WebSocket endpoint is `/v1/audio/transcriptions`. It supports only `model`, `language`, `response_format`, `temperature`, and `vad_filter` query parameters. `WHISPER_TEMPERATURE=0.0` is sent explicitly. The endpoint hard-codes `condition_on_previous_text=false` and LocalAgreement; it does not expose `no_speech_threshold` or LocalAgreement controls, so no unused no-speech setting exists in this project.
+
+faster-whisper-server's live endpoint is not true streaming: after `max_no_data_seconds` (hard-coded 1.0s) of silence it re-transcribes the accumulated buffer and only then sends the finalized JSON. On this CPU host each pass costs roughly 2.4s per second of audio, so the final result arrives a few seconds after you stop speaking and interim updates generally do not appear during short utterances. The adapter therefore waits for that flush instead of closing early (adaptive upper bound `WHISPER_WS_FINALIZATION_SECONDS=60`), and the overall turn latency is similar to the HTTP fallback. If a later utterance arrives while the previous finalize is still pending, the agent finishes the pending flush first before opening the next stream.
+
+Silero remains the authoritative speech gate, turn detector, and interruption signal. `WHISPER_VAD_FILTER=false` is the conservative default because enabling faster-whisper's additional VAD can independently filter/resegment audio during live decoding. The server also has an unavoidable live-stream idle finalization timeout; the adapter never sends silence merely to trigger it. To compare the optional residual filter, set `WHISPER_VAD_FILTER=true`, recreate only `voice-agent`, and compare silence hallucinations, first-word loss, short commands, Bluetooth/car audio, and first-interim/final latency against `false`. Keep the setting that improves those measurements in the target environment.
+
+Set `WHISPER_STREAMING_ENABLED=false` to restore the previous OpenAI-compatible HTTP STT wrapped in LiveKit `StreamAdapter`; Silero gating remains enabled in that rollback path.
+
 ## Docker Compose
 
 Build just the custom images:
@@ -128,7 +140,19 @@ Authentication is mandatory. A visitor can access only the login page, its stati
 - `AUTH_ENABLED` is fixed to `true` by Compose. Anonymous mode is not supported.
 - There is no public registration route. Create accounts locally with the admin command above.
 
-Relevant optional settings are `SESSION_TTL_HOURS=168`, `LOGIN_RATE_LIMIT_ATTEMPTS=10`, `LOGIN_RATE_LIMIT_WINDOW_MINUTES=15`, `MAX_ACTIVE_VOICE_SESSIONS_PER_USER=2`, and `VOICE_SESSION_RATE_LIMIT_PER_MINUTE=10`.
+### Creating A New Account
+
+On the Docker host, run the account command inside the running `web-ui` container. `--` tells `npm` that everything after it is passed to `node user-admin.mjs`, so append the username there:
+
+```sh
+docker compose exec web-ui npm run user:add -- alice
+```
+
+The command never accepts the password on the command line: it prompts interactively and masks input (`hideEchoBack`). The username must be 3-32 characters using letters, numbers, dot, underscore, or hyphen; the password must be 12-256 characters. It is stored as an Argon2id hash.
+
+Use `npm run user:list` (same invocation pattern) to list accounts and `npm run user:disable -- <username>` to disable an account and revoke its active sessions.
+
+Relevant optional settings are `SESSION_TTL_HOURS=168`, `LOGIN_RATE_LIMIT_ATTEMPTS=10`, `LOGIN_RATE_LIMIT_WINDOW_MINUTES=15`, `MAX_ACTIVE_VOICE_SESSIONS_PER_USER=2`, `VOICE_SESSION_RATE_LIMIT_PER_MINUTE=10`, and `VOICE_SESSION_TTL_MINUTES=10`. Browser page close sends a best-effort authenticated session-end request; the short voice-session TTL recovers a slot if that request cannot complete.
 
 ## Chat Retention
 
@@ -189,7 +213,7 @@ Default interruption values:
 - `INTERRUPTION_MIN_WORDS=1`
 - `FALSE_INTERRUPTION_TIMEOUT=0.80`
 
-Increase activation threshold or minimum speech duration to reject more noise. Keep short-utterance testing in mind when tuning: commands such as "stop", "no", and "wait" must still be recognized. The same configured Silero VAD object is shared by the STT StreamAdapter and AgentSession so speech gating and barge-in use consistent settings.
+Increase activation threshold or minimum speech duration to reject more noise. Keep short-utterance testing in mind when tuning: commands such as "stop", "no", and "wait" must still be recognized. The same configured Silero VAD settings are used by the streaming STT gate and AgentSession so speech gating and barge-in use consistent settings. The adapter does not submit silent frames to Whisper.
 
 ## Kagi MCP And Tool Telemetry
 
@@ -202,7 +226,8 @@ The browser consumes `lk.transcription` incrementally rather than waiting for th
 ## Troubleshooting
 
 - `docker compose config --quiet` verifies environment interpolation and Compose syntax without exposing values.
-- `docker compose logs -f voice-agent` shows startup VAD/interruption settings, LiveKit registration, and STT segment metrics.
+- `docker compose logs -f voice-agent` shows startup VAD/interruption settings, effective streaming/temperature/VAD-filter configuration, LiveKit registration, and compact STT segment metrics including first-interim latency.
+- If live transcription fails, set `WHISPER_STREAMING_ENABLED=false` and recreate only `voice-agent` to return to the known HTTP fallback while inspecting Whisper service logs.
 - `curl http://127.0.0.1:8088/health` checks the web UI service.
 - Verify `/v1/models` on the configured Qwen endpoint from the Docker host if the agent cannot answer.
 - If remote media fails while UI connection succeeds, inspect UDP/TURN forwarding before changing application code.
@@ -211,7 +236,7 @@ The browser consumes `lk.transcription` incrementally rather than waiting for th
 
 Keep `.env`, TLS private keys, authentication secrets, and any deployment certificates out of version control. The LiveKit API secret remains server-side; the legacy unauthenticated `/token` endpoint does not exist. `POST /api/voice/session` derives the runtime participant identity from the authenticated server-side user, checks rate/concurrency limits, and then mints a room-scoped token. The Python agent uses a Docker-internal, secret-authenticated interface to retrieve only that session's saved context and to submit finalized turns.
 
-The QNAP/OpenResty configuration is operator-managed outside this repository. Add this rule to the public VoxBigBrain virtual host before its normal application proxy location so public requests never reach the internal agent API:
+The reverse-proxy configuration is operator-managed outside this repository. Add this rule to the public VoxBigBrain virtual host before its normal application proxy location so public requests never reach the internal agent API:
 
 ```nginx
 location ^~ /internal/ {
@@ -225,7 +250,7 @@ Use HTTPS at the reverse proxy for the web UI and ensure it forwards the origina
 
 ## Development
 
-Run `python -m compileall -q app` from `source/voice-agent` for a quick Python syntax check. Run `npm test`, `node --check public/app.js`, and `node --check server.mjs` from `source/web-ui`. Rebuild the custom images after source changes.
+Run `python -m compileall -q app` and `python -m unittest discover -s test -v` from `source/voice-agent` for syntax and streaming-adapter checks. Run `npm test`, `node --check public/app.js`, and `node --check server.mjs` from `source/web-ui`. Rebuild the custom images after source changes.
 
 ## Contributing
 
