@@ -66,6 +66,7 @@ class InterruptionTracker:
         self._episode: InterruptionEpisode | None = None
         self._episode_seq = 0
         self._settle_handle: asyncio.TimerHandle | None = None
+        self._verify_handle: asyncio.TimerHandle | None = None
         session.on("agent_state_changed", self._on_agent_state)
         session.on("user_state_changed", self._on_user_state)
         session.on("user_input_transcribed", self._on_transcribed)
@@ -113,6 +114,10 @@ class InterruptionTracker:
                 # the user talks; the episode is owned by the user_state handler,
                 # but cover a missed ordering here.
                 self._open_episode()
+            elif self.state == InterruptionState.SPEAKING:
+                # A completed response must not leave SPEAKING behind to classify
+                # the next ordinary user turn as an interruption.
+                self._clear_episode(reason="assistant_finished_user_silent")
             return
 
     def _on_user_state(self, event) -> None:
@@ -208,15 +213,26 @@ class InterruptionTracker:
         episode.outcome = f"confirmed_{source}"
         self.state = InterruptionState.CONFIRMED_INTERRUPTION
         self._clear_settle()
+        self._clear_verify()
         logger.info("INTERRUPTION confirmed episode=%d chars=%d", episode.id, chars)
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-        loop.call_later(_CANCEL_VERIFY_DELAY_SECONDS, lambda: asyncio.ensure_future(self._verify_cancelled(episode)))
+        def verify() -> None:
+            self._verify_handle = None
+            if self._episode is episode and self.state == InterruptionState.CONFIRMED_INTERRUPTION:
+                asyncio.ensure_future(self._verify_cancelled(episode))
+        self._verify_handle = loop.call_later(_CANCEL_VERIFY_DELAY_SECONDS, verify)
 
     async def _verify_cancelled(self, episode: InterruptionEpisode) -> None:
         """Safety bound: guarantee the confirmed speech is cancelled exactly once."""
+        if self._episode is not episode or self.state != InterruptionState.CONFIRMED_INTERRUPTION:
+            logger.info("INTERRUPTION verify_skipped episode=%d reason=stale_episode", episode.id)
+            return
+        if episode.speech_id is None:
+            logger.info("INTERRUPTION verify_skipped episode=%d reason=missing_speech", episode.id)
+            return
         handle = None
         try:
             handle = self._session.current_speech
@@ -231,7 +247,7 @@ class InterruptionTracker:
             done = bool(handle.done()) if handle is not None else True
         except Exception:
             done = True
-        if handle is None or done or interrupted or (episode.speech_id is not None and handle_id != episode.speech_id):
+        if handle is None or done or interrupted or handle_id != episode.speech_id:
             logger.info("INTERRUPTION speech_cancelled episode=%d", episode.id)
             return
         try:
@@ -248,7 +264,16 @@ class InterruptionTracker:
         episode.outcome = f"false_{reason}"
         self.state = InterruptionState.FALSE_INTERRUPTION
         self._clear_settle()
+        self._clear_verify()
         logger.info("INTERRUPTION false episode=%d reason=%s", episode.id, reason)
+
+    def _clear_episode(self, *, reason: str) -> None:
+        if self._episode is not None:
+            logger.info("INTERRUPTION cleared episode=%d reason=%s", self._episode.id, reason)
+        self._clear_settle()
+        self._clear_verify()
+        self._episode = None
+        self.state = InterruptionState.IDLE
 
     def _arm_settle(self, episode: InterruptionEpisode) -> None:
         self._clear_settle()
@@ -267,6 +292,11 @@ class InterruptionTracker:
         if self._settle_handle is not None:
             self._settle_handle.cancel()
             self._settle_handle = None
+
+    def _clear_verify(self) -> None:
+        if self._verify_handle is not None:
+            self._verify_handle.cancel()
+            self._verify_handle = None
 
 
 def install_interruption_tracker(session, *, settle_seconds: float = 20.0, confirm_final_only: bool = True) -> InterruptionTracker:
