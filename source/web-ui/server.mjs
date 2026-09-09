@@ -54,7 +54,6 @@ export function createApp(overrides = {}) {
   const db = overrides.db || createDatabase(config.databasePath);
   const app = express();
   const allow = rateLimiter();
-  const runtimeHistory = new Map();
   const roomService = new RoomServiceClient(config.livekitInternalUrl, config.apiKey, config.apiSecret);
   app.disable("x-powered-by");
   app.set("trust proxy", 1);
@@ -98,7 +97,6 @@ export function createApp(overrides = {}) {
     if (!voices.length) return;
     db.prepare(`UPDATE voice_sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL${id ? " AND id = ?" : ""}`).run(timestamp(), userId, ...(id ? [id] : []));
     for (const voice of voices) {
-      runtimeHistory.delete(voice.id);
       try { await roomService.removeParticipant(voice.room, voice.runtime_identity); } catch { /* The room may already be closed. */ }
     }
   }
@@ -138,7 +136,6 @@ export function createApp(overrides = {}) {
     if (active >= config.maxVoiceSessions) return res.status(429).json({ error: "Maximum active voice sessions reached" });
     const id = newId(), identity = `voice-${newId()}`, room = `voice-${newId()}`, expiresAt = timestamp() + config.voiceSessionTtlMs;
     db.prepare("INSERT INTO voice_sessions (id, user_id, conversation_id, room, runtime_identity, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(id, req.auth.user_id, conversationId, room, identity, timestamp(), expiresAt);
-    runtimeHistory.set(id, []);
     const token = new AccessToken(config.apiKey, config.apiSecret, { identity, ttl: Math.max(1, Math.floor((Math.min(req.auth.expires_at, expiresAt) - timestamp()) / 1000)) });
     token.addGrant({ roomJoin: true, room, canPublish: true, canSubscribe: true }); token.roomConfig = new RoomConfiguration({ agents: [new RoomAgentDispatch({ agentName })] });
     res.json({ token: await token.toJwt(), room, identity, voiceSessionId: id, agent: agentName, url: `wss://${config.rtcHost}` });
@@ -165,7 +162,6 @@ export function createApp(overrides = {}) {
     const remove = db.transaction(() => {
       const conversation = db.prepare("SELECT id FROM conversations WHERE id = ? AND user_id = ?").get(req.params.id, req.auth.user_id);
       if (!conversation) return false;
-      // A connected agent keeps this runtime history ephemeral after its saved chat is deleted.
       db.prepare("UPDATE voice_sessions SET conversation_id = NULL WHERE user_id = ? AND conversation_id = ?").run(req.auth.user_id, conversation.id);
       db.prepare("DELETE FROM conversations WHERE id = ? AND user_id = ?").run(conversation.id, req.auth.user_id);
       return true;
@@ -173,22 +169,6 @@ export function createApp(overrides = {}) {
     if (!remove()) return res.status(404).json({ error: "Conversation not found" });
     res.status(204).end();
   });
-  app.post("/api/conversations/save", requireOrigin, requireAuth, requireCsrf, (req, res) => {
-    const voiceSessionId = req.body?.voiceSessionId;
-    const voice = db.prepare("SELECT * FROM voice_sessions WHERE id = ? AND user_id = ? AND revoked_at IS NULL AND expires_at > ?").get(voiceSessionId, req.auth.user_id, timestamp());
-    if (!voice) return res.status(404).json({ error: "Voice session not found" });
-    let conversationId = voice.conversation_id;
-    if (!conversationId) {
-      const buffered = runtimeHistory.get(voice.id) || [];
-      const firstUser = buffered.find((message) => message.role === "user")?.content;
-      conversationId = newId();
-      db.prepare("INSERT INTO conversations (id, user_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run(conversationId, req.auth.user_id, (firstUser || `Chat ${new Date().toLocaleString()}`).slice(0, 120), timestamp(), timestamp());
-      db.prepare("UPDATE voice_sessions SET conversation_id = ? WHERE id = ?").run(conversationId, voice.id);
-      appendMessages(db, conversationId, buffered);
-    }
-    res.json({ conversationId });
-  });
-
   function internalAuth(req, res, next) { if (!safeEqual(req.get("authorization")?.replace(/^Bearer /, "") || "", config.internalAgentSecret)) return res.status(401).end(); next(); }
   app.get("/internal/voice-sessions/:identity", internalAuth, (req, res) => {
     const voice = db.prepare("SELECT * FROM voice_sessions WHERE runtime_identity = ? AND revoked_at IS NULL AND expires_at > ?").get(req.params.identity, timestamp());
@@ -200,10 +180,22 @@ export function createApp(overrides = {}) {
     const voice = db.prepare("SELECT * FROM voice_sessions WHERE runtime_identity = ? AND revoked_at IS NULL AND expires_at > ?").get(req.params.identity, timestamp());
     const message = req.body || {};
     if (!voice || !["user", "assistant"].includes(message.role) || typeof message.content !== "string" || typeof message.sourceId !== "string") return res.status(400).end();
-    const item = { role: message.role, content: message.content, sourceId: message.sourceId, createdAt: Number(message.createdAt) || timestamp() };
-    const buffer = runtimeHistory.get(voice.id) || []; if (!buffer.some((entry) => entry.sourceId === item.sourceId)) buffer.push(item); runtimeHistory.set(voice.id, buffer);
-    if (voice.conversation_id) appendMessages(db, voice.conversation_id, [item]);
-    res.status(204).end();
+    const item = { role: message.role, content: message.content.trim(), sourceId: message.sourceId, createdAt: Number(message.createdAt) || timestamp() };
+    if (!item.content) return res.status(204).end();
+    try {
+      const persist = db.transaction(() => {
+        let conversationId = voice.conversation_id;
+        if (!conversationId) {
+          conversationId = newId();
+          const time = timestamp();
+          db.prepare("INSERT INTO conversations (id, user_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run(conversationId, voice.user_id, (item.role === "user" ? item.content : `Chat ${new Date().toLocaleString()}`).slice(0, 120), time, time);
+          db.prepare("UPDATE voice_sessions SET conversation_id = ? WHERE id = ? AND conversation_id IS NULL").run(conversationId, voice.id);
+        }
+        appendMessages(db, conversationId, [item]);
+      });
+      persist();
+      res.status(204).end();
+    } catch (error) { console.error(`Autosave failed for voice session ${voice.id}:`, error); res.status(500).end(); }
   });
 
   app.get("/login", (_req, res) => res.sendFile(path.join(root, "public", "login.html")));

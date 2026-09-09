@@ -19,12 +19,14 @@ test("uses one accessible stateful session control", () => {
 });
 
 test("uses accessible compact icon controls and persisted sound volume", () => {
-  for (const id of ["mute", "newChat", "saveChat"]) assert.match(html, new RegExp(`id="${id}"[^>]*class="icon-button"[^>]*aria-label="[^"]+"[^>]*title="[^"]+"`));
+  for (const id of ["mute", "newChat"]) assert.match(html, new RegExp(`id="${id}"[^>]*class="icon-button"[^>]*aria-label="[^"]+"[^>]*title="[^"]+"`));
+  assert.doesNotMatch(html, /id="saveChat"/);
   assert.match(html, /id="uiSoundVolume"[^>]*type="range"[^>]*aria-label="UI sound volume"/);
   assert.match(app, /UI_SOUND_VOLUME_KEY = "voxbigbrain\.uiSoundVolume"/);
   assert.match(app, /localStorage\.setItem\(UI_SOUND_VOLUME_KEY/);
   assert.match(app, /Math\.min\(volume \* uiSoundVolume, \.18\)/);
   assert.match(css, /\.icon-button \{ width:44px; min-width:44px; height:44px/);
+  assert.match(css, /#soundControl \{ flex:1 1 150px; min-width:150px/);
 });
 
 test("renders mute state through the icon-only helper", () => {

@@ -172,11 +172,11 @@ Relevant optional settings are `SESSION_TTL_HOURS=168`, `LOGIN_RATE_LIMIT_ATTEMP
 
 ## Chat Retention
 
-New conversations are ephemeral by default. Finalized turns stay only in runtime memory and disappear after disconnect/restart unless the signed-in user selects **Save Chat**. Raw audio, VAD data, interim Whisper fragments, tool inputs, and tool results are not saved.
+New conversations autosave after their first meaningful finalized user or assistant turn. Empty sessions do not create saved-chat entries. Raw audio, VAD data, interim Whisper fragments, tool inputs, tool results, and interrupted or duplicate turns are not saved.
 
-Saving promotes the current finalized history and subsequent finalized user/assistant turns to SQLite. Saved chats are scoped to the authenticated user; knowing a conversation ID is not sufficient to read it. **Saved Chats** loads the transcript and the next voice session restores the most recent `CHAT_CONTEXT_MAX_MESSAGES` (default 50) in chronological order into LiveKit Agents `ChatContext`, so Qwen receives actual prior context. Long-context summarization is a future enhancement.
+Finalized user/assistant turns append automatically to SQLite. Saved chats are scoped to the authenticated user; knowing a conversation ID is not sufficient to read it. **Saved Chats** loads the transcript and the next voice session restores the most recent `CHAT_CONTEXT_MAX_MESSAGES` (default 50) in chronological order into LiveKit Agents `ChatContext`, so Qwen receives actual prior context. Long-context summarization is a future enhancement.
 
-Open **Saved Chats** to resume, rename, or permanently delete one of your saved conversations. Rename trims surrounding whitespace and accepts titles up to 120 characters. Delete removes the conversation and its saved messages from SQLite permanently. If the deleted chat is active in a voice session, that session continues as an ephemeral chat and future turns are not appended to the deleted conversation.
+Open **Saved Chats** to resume, rename, or permanently delete one of your saved conversations. Rename trims surrounding whitespace and accepts titles up to 120 characters. **New Chat** starts fresh context; its first finalized turn creates a separate saved conversation. Delete permanently removes the selected conversation and its messages. If the deleted chat is active, the live session continues without restoring the deleted history and its next finalized turn starts a new autosaved conversation.
 
 SQLite is stored at `/data/voxbigbrain.db` in the persistent `voxbigbrain-data` Compose volume. To make a consistent simple backup, stop the web service first, then archive the volume:
 
