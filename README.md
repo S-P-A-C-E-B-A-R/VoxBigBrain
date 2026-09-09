@@ -100,6 +100,14 @@ Required deployment settings include `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `P
 
 The Whisper model, Qwen model, Kokoro voice, timezone, VAD thresholds, and interruption settings are all documented in `.env.sample` and can be adjusted without rebuilding the image. `INTERRUPTION_TRANSCRIPTION_SETTLE_SECONDS=60` is the upper bound for preserving a provisional interruption while a CPU streaming-Whisper final is pending; keep it at least as large as `WHISPER_WS_FINALIZATION_SECONDS`. `INTERRUPTION_CONFIRM_FINAL_ONLY=true` prevents interim text from permanently cancelling speech.
 
+## Voice Agent Behavior
+
+The built-in voice prompt frames VoxBigBrain as a conversational companion rather than a formal request queue. It follows the user's lead, adapts its technicality and energy, remembers relevant current-conversation context, and can react or continue a thought without forcing every exchange into a question-and-answer pattern.
+
+Responses are optimized for speech: direct and fluid by default, concise unless the topic calls for depth, without Markdown, tables, code formatting, long lists, or spoken URLs unless requested. The agent avoids canned capability summaries, repeated offers of help, and generic closing questions.
+
+The current local date and time are supplied to each session and are authoritative for relative-time reasoning. Kagi search is used for explicit searches, current or changing information, or when verification materially improves the answer; results are synthesized and recent credible sources are preferred. The agent cannot control devices, execute commands, access arbitrary files, operate Home Assistant, publish MQTT messages, or make arbitrary HTTP requests.
+
 ## Streaming Whisper
 
 `WHISPER_STREAMING_ENABLED=true` is the default. The voice agent opens `WHISPER_WS_URL` when Silero confirms speech, downmixes when necessary, resamples to 16 kHz, and sends only signed 16-bit little-endian mono PCM frames. It publishes the server's cumulative LocalAgreement text as interim LiveKit events and emits the last cumulative result as the final event. The browser replaces one transcript bubble rather than adding one per update.
