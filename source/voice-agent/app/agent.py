@@ -107,45 +107,94 @@ async def voice_session(ctx: agents.JobContext):
         vad=vad,
         turn_handling=turn_handling_options(),
     )
+    session_started_at = time.monotonic()
+    active_turn_id = "-"
+    active_turn_started_at = session_started_at
+    agent_state = "initializing"
+    generation_speech_id = None
+    assistant_output_seen = False
+
+    def turn_log(event: str, **fields) -> None:
+        details = " ".join(f"{key}={value}" for key, value in sorted(fields.items()))
+        logger.info("TURN %s +%.3f event=%s%s", active_turn_id, time.monotonic() - active_turn_started_at, event, f" {details}" if details else "")
+
+    def finish_generation(handle) -> None:
+        try:
+            error = handle.exception()
+        except Exception as exc:
+            error = exc
+        turn_log(
+            "generation_finished",
+            speech=getattr(handle, "id", "-"),
+            interrupted=bool(getattr(handle, "interrupted", False)),
+            error=type(error).__name__ if error else "-",
+        )
+
     # Supervisory two-phase interruption confirmation. The framework keeps owning
     # VAD pause/resume/cancel; the tracker only mirrors states, confirms on FINAL
     # transcripts, and emits compact INTERRUPTION diagnostics.
     tracker = install_interruption_tracker(session, settle_seconds=config.interruption_transcription_settle_seconds, confirm_final_only=config.interruption_confirm_final_only)
     @session.on("user_state_changed")
     def log_user_state(event) -> None:
+        if event.new_state == "speaking" and agent_state == "thinking":
+            turn_log("user_speech_during_thinking")
         if event.new_state == "speaking":
-            log_turn_timeline("vad_speech_start", old=event.old_state)
+            turn_log("vad_speech_start", old=event.old_state)
         elif event.old_state == "speaking":
-            log_turn_timeline("vad_speech_end", new=event.new_state)
+            turn_log("vad_speech_end", new=event.new_state)
         else:
-            log_turn_timeline("user_state", new=event.new_state, old=event.old_state)
+            turn_log("user_state", new=event.new_state, old=event.old_state)
 
     @session.on("user_input_transcribed")
     def log_transcription(event) -> None:
-        log_turn_timeline(
+        turn_log(
             "stt_final" if event.is_final else "stt_interim",
             chars=len(event.transcript or ""),
             segment=event.item_id or "-",
         )
+        if event.is_final and agent_state == "thinking":
+            turn_log("late_stt", segment=event.item_id or "-", arrived_after_thinking=True)
 
     @session.on("agent_state_changed")
     def log_agent_state(event) -> None:
-        log_turn_timeline("agent_state", new=event.new_state, old=event.old_state)
+        nonlocal agent_state, generation_speech_id, assistant_output_seen
+        if agent_state == "thinking" and event.new_state == "listening" and not assistant_output_seen:
+            turn_log("thinking_aborted", generation_speech=generation_speech_id or "-")
+        agent_state = event.new_state
+        turn_log("agent_state", new=event.new_state, old=event.old_state)
+        if event.new_state == "thinking":
+            generation_speech_id = None
+            assistant_output_seen = False
+            turn_log("llm_generation_requested")
+        elif event.new_state == "speaking":
+            turn_log("tts_start")
 
     @session.on("speech_created")
     def log_speech_created(event) -> None:
-        log_turn_timeline(
+        nonlocal generation_speech_id
+        speech_id = event.speech_handle.id
+        turn_log(
             "llm_generation_created" if event.source == "generate_reply" else "speech_created",
             source=event.source,
-            speech=event.speech_handle.id,
+            speech=speech_id,
             user_initiated=event.user_initiated,
         )
+        if event.source == "generate_reply":
+            generation_speech_id = speech_id
+            event.speech_handle.add_done_callback(finish_generation)
 
     @session.on("conversation_item_added")
     def persist_final_message(event) -> None:
+        nonlocal active_turn_id, active_turn_started_at, assistant_output_seen
         item = event.item
         if isinstance(item, ChatMessage):
-            log_turn_timeline(
+            if item.role == "user":
+                active_turn_id = item.id or "-"
+                active_turn_started_at = time.monotonic()
+                assistant_output_seen = False
+            elif item.role == "assistant":
+                assistant_output_seen = True
+            turn_log(
                 "user_turn_committed" if item.role == "user" else "assistant_output_created",
                 chars=len(item.text_content or ""),
                 item=item.id,
@@ -167,7 +216,25 @@ async def voice_session(ctx: agents.JobContext):
             except Exception:
                 logger.exception("Conversation persistence event failed")
         asyncio.create_task(persist())
-    install_tool_telemetry(session, ctx.room, config.timezone)
+    @session.on("agent_false_interruption")
+    def log_false_interruption(event) -> None:
+        turn_log("false_interruption", resumed=bool(getattr(event, "resumed", False)))
+
+    @session.on("user_transcription_timeout")
+    def log_transcription_timeout(event) -> None:
+        turn_log("stt_timeout", speech_duration=getattr(event, "speech_duration", "-"))
+
+    @session.on("error")
+    def log_session_error(event) -> None:
+        error = getattr(event, "error", None)
+        turn_log("session_error", error=type(error).__name__ if error else "-")
+
+    @session.on("close")
+    def log_session_close(event) -> None:
+        error = getattr(event, "error", None)
+        turn_log("session_close", reason=getattr(event, "reason", "-"), error=type(error).__name__ if error else "-")
+
+    install_tool_telemetry(session, ctx.room, config.timezone, turn_id=lambda: active_turn_id, turn_elapsed=lambda: time.monotonic() - active_turn_started_at)
     await session.start(room=ctx.room, agent=VoiceAssistant(chat_ctx), room_options=room_io.RoomOptions(audio_input=True, audio_output=True, text_input=True, text_output=True))
 
 
