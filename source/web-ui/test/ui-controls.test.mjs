@@ -27,6 +27,12 @@ test("uses accessible compact icon controls and persisted sound volume", () => {
   assert.match(css, /\.icon-button \{ width:44px; min-width:44px; height:44px/);
 });
 
+test("renders mute state through the icon-only helper", () => {
+  assert.match(app, /function updateMuteButton\(\)/);
+  assert.match(app, /muted \? "Unmute microphone" : "Mute microphone"/);
+  assert.doesNotMatch(app, /muteButton\.(textContent|innerText|replaceChildren)/);
+});
+
 test("uses the octave-raised thinking pattern with existing timing and volume scaling", () => {
   assert.match(app, /\[\[660, 0\], \[1240, \.135\], \[940, \.27\]\]/);
   assert.match(app, /tone\(frequency, \.1, delay, \.8\)/);
