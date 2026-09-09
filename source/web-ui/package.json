@@ -3,9 +3,17 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@node-rs/argon2": "^2.2.0",
     "@livekit/protocol": "^1.45.1",
+    "better-sqlite3": "^12.11.1",
     "express": "^4.21.2",
     "livekit-client": "^2.15.0",
     "livekit-server-sdk": "^2.13.0"
+  },
+  "scripts": {
+    "test": "node --test test/**/*.test.mjs",
+    "user:add": "node user-admin.mjs add",
+    "user:list": "node user-admin.mjs list",
+    "user:disable": "node user-admin.mjs disable"
   }
 }

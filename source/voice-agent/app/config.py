@@ -21,6 +21,8 @@ class Config:
     interruption_min_duration: float = float(os.getenv("INTERRUPTION_MIN_DURATION", "0.50"))
     interruption_min_words: int = int(os.getenv("INTERRUPTION_MIN_WORDS", "1"))
     false_interruption_timeout: float = float(os.getenv("FALSE_INTERRUPTION_TIMEOUT", "0.80"))
+    web_internal_url: str = os.getenv("WEB_INTERNAL_URL", "http://web-ui:8080")
+    internal_agent_secret: str = os.environ["INTERNAL_AGENT_SECRET"]
 
 
 config = Config()

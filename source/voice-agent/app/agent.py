@@ -1,7 +1,11 @@
+import asyncio
 import logging
+
+import aiohttp
 
 from livekit import agents
 from livekit.agents import Agent, AgentServer, AgentSession, mcp, room_io, stt
+from livekit.agents.llm import ChatContext, ChatMessage
 from livekit.plugins import openai, silero
 
 from .config import config
@@ -25,8 +29,8 @@ def make_kagi_toolset():
 
 
 class VoiceAssistant(Agent):
-    def __init__(self):
-        super().__init__(instructions=instructions(current_time_context(config.timezone)), tools=[make_kagi_toolset()])
+    def __init__(self, chat_ctx: ChatContext):
+        super().__init__(instructions=instructions(current_time_context(config.timezone)), chat_ctx=chat_ctx, tools=[make_kagi_toolset()])
 
 
 def log_stt_metrics(metrics) -> None:
@@ -60,6 +64,17 @@ async def voice_session(ctx: agents.JobContext):
     # non-speech and sends completed speech frames to its recognize() method.
     gated_stt = stt.StreamAdapter(stt=whisper_stt, vad=vad)
     gated_stt.on("metrics_collected", log_stt_metrics)
+    participant = await ctx.wait_for_participant()
+    identity = participant.identity
+    headers = {"Authorization": f"Bearer {config.internal_agent_secret}"}
+    async with aiohttp.ClientSession(headers=headers) as http:
+        async with http.get(f"{config.web_internal_url}/internal/voice-sessions/{identity}") as response:
+            if response.status != 200:
+                raise RuntimeError("Voice session authorization was not found")
+            restored = await response.json()
+    chat_ctx = ChatContext.empty()
+    for message in restored["messages"]:
+        chat_ctx.add_message(role=message["role"], content=message["content"], id=message["id"], created_at=message["created_at"] / 1000)
     session = AgentSession(
         stt=gated_stt,
         llm=openai.LLM(model=config.qwen_model, base_url=config.qwen_base_url, api_key=config.qwen_api_key),
@@ -67,8 +82,28 @@ async def voice_session(ctx: agents.JobContext):
         vad=vad,
         turn_handling={"interruption": {"mode": "vad", "min_duration": config.interruption_min_duration, "min_words": config.interruption_min_words, "false_interruption_timeout": config.false_interruption_timeout, "resume_false_interruption": True}},
     )
+    @session.on("conversation_item_added")
+    def persist_final_message(event) -> None:
+        item = event.item
+        if not isinstance(item, ChatMessage) or item.role not in ("user", "assistant") or item.interrupted:
+            return
+        content = item.text_content
+        if not content:
+            return
+        async def persist() -> None:
+            try:
+                async with aiohttp.ClientSession(headers=headers) as http:
+                    async with http.post(
+                        f"{config.web_internal_url}/internal/voice-sessions/{identity}/messages",
+                        json={"sourceId": item.id, "role": item.role, "content": content, "createdAt": int(item.created_at * 1000)},
+                    ) as response:
+                        if response.status != 204:
+                            logger.warning("Conversation persistence event rejected status=%s", response.status)
+            except Exception:
+                logger.exception("Conversation persistence event failed")
+        asyncio.create_task(persist())
     install_tool_telemetry(session, ctx.room, config.timezone)
-    await session.start(room=ctx.room, agent=VoiceAssistant(), room_options=room_io.RoomOptions(audio_input=True, audio_output=True, text_input=True, text_output=True))
+    await session.start(room=ctx.room, agent=VoiceAssistant(chat_ctx), room_options=room_io.RoomOptions(audio_input=True, audio_output=True, text_input=True, text_output=True))
 
 
 if __name__ == "__main__":

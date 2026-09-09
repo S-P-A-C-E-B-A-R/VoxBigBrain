@@ -2,6 +2,8 @@
 
 VoxBigBrain is a self-hosted, full-duplex voice interface for a local LLM. It keeps a capable reasoning model such as Qwen at the center of the system rather than replacing it with a speech-native conversational model.
 
+VoxBigBrain intentionally requires login before granting access to the local LLM or LiveKit agent session. This protects the inference server and connected tools from unauthorized Internet use.
+
 ## ⚠️ Disclaimer
 
 Everything below (and in this repo) is unapologetically vibecoded. Expect vibes, not guarantees. Proceed with good humor and version control.
@@ -80,13 +82,21 @@ cp .env.sample .env
 docker compose up -d --build
 ```
 
+Create the first account after the web service starts:
+
+```sh
+docker compose exec web-ui npm run user:add -- alice
+```
+
+The command prompts for a password and does not accept it on the command line. Use `npm run user:list` to list accounts and `npm run user:disable -- <username>` to disable an account and revoke its sessions.
+
 Check the web service with `curl http://127.0.0.1:8088/health` and follow the custom service logs with `docker compose logs -f voice-agent web-ui`.
 
 ## Environment Configuration
 
 `.env.sample` is the canonical public template. Copy it to the untracked `.env`; never commit that file.
 
-Required deployment settings include `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `PUBLIC_UI_HOST`, `PUBLIC_RTC_HOST`, `PUBLIC_TURN_HOST`, `QWEN_BASE_URL`, `QWEN_API_KEY`, and `KAGI_API_KEY`. The Compose file fails clearly when required values are absent. `KAGI_API_KEY` is only needed because the current agent enables Kagi MCP at startup.
+Required deployment settings include `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `PUBLIC_UI_HOST`, `PUBLIC_RTC_HOST`, `PUBLIC_TURN_HOST`, `QWEN_BASE_URL`, `QWEN_API_KEY`, `KAGI_API_KEY`, `SESSION_SECRET`, and `INTERNAL_AGENT_SECRET`. Generate the two authentication secrets with `openssl rand -base64 48`. The Compose file fails clearly when required values are absent. `KAGI_API_KEY` is only needed because the current agent enables Kagi MCP at startup.
 
 The Whisper model, Qwen model, Kokoro voice, timezone, VAD thresholds, and interruption settings are all documented in `.env.sample` and can be adjusted without rebuilding the image.
 
@@ -105,6 +115,36 @@ docker compose up -d --no-deps --force-recreate voice-agent
 ```
 
 The web UI serves plain HTTP on host port `8088`. TLS belongs at the external reverse proxy, not in this container.
+
+## Authentication And Accounts
+
+Authentication is mandatory. A visitor can access only the login page, its static assets, and the minimal `GET /health` response. Every application API, saved-chat endpoint, browser asset for the voice application, and `POST /api/voice/session` requires an authenticated server-side session.
+
+- Passwords are stored as Argon2id hashes. Plaintext passwords, session tokens, and hashes are never logged.
+- Sessions use opaque, HttpOnly, SameSite=Lax cookies. Cookies are marked Secure when `NODE_ENV=production`; terminate TLS at the reverse proxy in Internet-facing deployments.
+- Session lifetime defaults to 168 hours. Logout revokes the server-side session immediately.
+- State-changing browser requests require a per-session CSRF token and same-origin validation.
+- Login failures are generic. Login attempts are limited by source IP plus username. Voice-session creation is limited per authenticated user and defaults to two concurrent active sessions.
+- `AUTH_ENABLED` is fixed to `true` by Compose. Anonymous mode is not supported.
+- There is no public registration route. Create accounts locally with the admin command above.
+
+Relevant optional settings are `SESSION_TTL_HOURS=168`, `LOGIN_RATE_LIMIT_ATTEMPTS=10`, `LOGIN_RATE_LIMIT_WINDOW_MINUTES=15`, `MAX_ACTIVE_VOICE_SESSIONS_PER_USER=2`, and `VOICE_SESSION_RATE_LIMIT_PER_MINUTE=10`.
+
+## Chat Retention
+
+New conversations are ephemeral by default. Finalized turns stay only in runtime memory and disappear after disconnect/restart unless the signed-in user selects **Save Chat**. Raw audio, VAD data, interim Whisper fragments, tool inputs, and tool results are not saved.
+
+Saving promotes the current finalized history and subsequent finalized user/assistant turns to SQLite. Saved chats are scoped to the authenticated user; knowing a conversation ID is not sufficient to read it. **Saved Chats** loads the transcript and the next voice session restores the most recent `CHAT_CONTEXT_MAX_MESSAGES` (default 50) in chronological order into LiveKit Agents `ChatContext`, so Qwen receives actual prior context. Long-context summarization is a future enhancement.
+
+SQLite is stored at `/data/voxbigbrain.db` in the persistent `voxbigbrain-data` Compose volume. To make a consistent simple backup, stop the web service first, then archive the volume:
+
+```sh
+docker compose stop web-ui
+docker run --rm -v llm_voxbigbrain-data:/data -v "$PWD":/backup alpine tar czf /backup/voxbigbrain-data-backup.tgz -C /data .
+docker compose start web-ui
+```
+
+Adjust `llm_voxbigbrain-data` if your Compose project name differs. Keep backups private: they contain password hashes and saved transcripts. Schema migrations run at web-service startup, are versioned in SQLite, and never drop data automatically.
 
 ## Public Hostnames And Reverse Proxy
 
@@ -167,11 +207,13 @@ The browser consumes `lk.transcription` incrementally rather than waiting for th
 
 ## Security Considerations
 
-Keep `.env`, TLS private keys, and any deployment certificates out of version control. The web UI can mint room tokens, so protect its network exposure with your reverse proxy and normal access controls. This project intentionally has no shell, filesystem, arbitrary HTTP, MQTT, Home Assistant, or device-control tools. Review any future MCP tool before enabling it.
+Keep `.env`, TLS private keys, authentication secrets, and any deployment certificates out of version control. The LiveKit API secret remains server-side; the legacy unauthenticated `/token` endpoint does not exist. `POST /api/voice/session` derives the runtime participant identity from the authenticated server-side user, checks rate/concurrency limits, and then mints a room-scoped token. The Python agent uses a Docker-internal, secret-authenticated interface to retrieve only that session's saved context and to submit finalized turns.
+
+Use HTTPS at the reverse proxy for the web UI and ensure it forwards the original protocol so Secure cookies work. LiveKit signaling, TURN, and media remain public network services by design, but they require a token issued by the authenticated web service before a browser can join an agent room. This is small self-hosted authentication, not enterprise-grade identity infrastructure. Review any future MCP tool before enabling it.
 
 ## Development
 
-Run `python -m compileall -q app` from `source/voice-agent` for a quick Python syntax check. Run `node --check public/app.js` and `node --check server.mjs` from `source/web-ui`. Rebuild the custom images after source changes.
+Run `python -m compileall -q app` from `source/voice-agent` for a quick Python syntax check. Run `npm test`, `node --check public/app.js`, and `node --check server.mjs` from `source/web-ui`. Rebuild the custom images after source changes.
 
 ## Contributing
 

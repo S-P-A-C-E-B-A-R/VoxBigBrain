@@ -10,10 +10,11 @@
 </head>
 <body>
   <main id="app">
-    <header><h1>VoxBigBrain</h1><div class="subtitle">Local LLM speech terminal</div><div id="status">Initializing...</div></header>
-    <div id="controls"><button id="connect" disabled>Connect</button><button id="disconnect" disabled>Disconnect</button><button id="mute" disabled>Mute</button><button id="clear">Clear conversation</button></div>
+    <header><div class="account"><div><h1>VoxBigBrain</h1><div class="subtitle">Local LLM speech terminal</div></div><div><span id="username"></span><button id="logout" class="quiet">Logout</button></div></div><div id="status">Initializing...</div></header>
+    <div id="controls"><button id="connect" disabled>Connect</button><button id="disconnect" disabled>Disconnect</button><button id="mute" disabled>Mute</button><button id="newChat">New Chat</button><button id="saveChat" disabled>Save Chat</button><button id="savedChats">Saved Chats</button></div>
     <section id="conversationPanel"><div class="label">Conversation</div><div id="transcript"><div id="emptyTranscript">Speech transcription will appear here.</div></div></section>
     <details id="logPanel"><summary>Event Log</summary><div id="log"></div></details>
+    <details id="savedPanel"><summary>Saved Chats</summary><div id="savedList"></div></details>
     <footer><div id="sessionMeta">No active session</div><div id="transportMeta">Web interface</div></footer>
   </main>
   <script src="/livekit-client.js"></script>
