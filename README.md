@@ -136,6 +136,8 @@ New conversations are ephemeral by default. Finalized turns stay only in runtime
 
 Saving promotes the current finalized history and subsequent finalized user/assistant turns to SQLite. Saved chats are scoped to the authenticated user; knowing a conversation ID is not sufficient to read it. **Saved Chats** loads the transcript and the next voice session restores the most recent `CHAT_CONTEXT_MAX_MESSAGES` (default 50) in chronological order into LiveKit Agents `ChatContext`, so Qwen receives actual prior context. Long-context summarization is a future enhancement.
 
+Open **Saved Chats** to resume, rename, or permanently delete one of your saved conversations. Rename trims surrounding whitespace and accepts titles up to 120 characters. Delete removes the conversation and its saved messages from SQLite permanently. If the deleted chat is active in a voice session, that session continues as an ephemeral chat and future turns are not appended to the deleted conversation.
+
 SQLite is stored at `/data/voxbigbrain.db` in the persistent `voxbigbrain-data` Compose volume. To make a consistent simple backup, stop the web service first, then archive the volume:
 
 ```sh
@@ -208,6 +210,16 @@ The browser consumes `lk.transcription` incrementally rather than waiting for th
 ## Security Considerations
 
 Keep `.env`, TLS private keys, authentication secrets, and any deployment certificates out of version control. The LiveKit API secret remains server-side; the legacy unauthenticated `/token` endpoint does not exist. `POST /api/voice/session` derives the runtime participant identity from the authenticated server-side user, checks rate/concurrency limits, and then mints a room-scoped token. The Python agent uses a Docker-internal, secret-authenticated interface to retrieve only that session's saved context and to submit finalized turns.
+
+The QNAP/OpenResty configuration is operator-managed outside this repository. Add this rule to the public VoxBigBrain virtual host before its normal application proxy location so public requests never reach the internal agent API:
+
+```nginx
+location ^~ /internal/ {
+    return 404;
+}
+```
+
+Keep `INTERNAL_AGENT_SECRET` enabled after adding the proxy rule. The proxy block prevents public routing; the application secret continues to authenticate trusted Docker-network calls.
 
 Use HTTPS at the reverse proxy for the web UI and ensure it forwards the original protocol so Secure cookies work. LiveKit signaling, TURN, and media remain public network services by design, but they require a token issued by the authenticated web service before a browser can join an agent room. This is small self-hosted authentication, not enterprise-grade identity infrastructure. Review any future MCP tool before enabling it.
 

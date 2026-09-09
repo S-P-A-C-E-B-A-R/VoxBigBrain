@@ -154,6 +154,25 @@ export function createApp(overrides = {}) {
     if (!conversation) return res.status(404).json({ error: "Conversation not found" });
     res.json({ conversation, messages: db.prepare("SELECT id, role, content, sequence, created_at FROM messages WHERE conversation_id = ? ORDER BY sequence").all(conversation.id) });
   });
+  app.patch("/api/conversations/:id", requireOrigin, requireAuth, requireCsrf, (req, res) => {
+    const title = typeof req.body?.title === "string" ? req.body.title.trim() : "";
+    if (!title || title.length > 120) return res.status(400).json({ error: "Title must be 1-120 characters" });
+    const result = db.prepare("UPDATE conversations SET title = ?, updated_at = ? WHERE id = ? AND user_id = ?").run(title, timestamp(), req.params.id, req.auth.user_id);
+    if (!result.changes) return res.status(404).json({ error: "Conversation not found" });
+    res.json({ id: req.params.id, title });
+  });
+  app.delete("/api/conversations/:id", requireOrigin, requireAuth, requireCsrf, (req, res) => {
+    const remove = db.transaction(() => {
+      const conversation = db.prepare("SELECT id FROM conversations WHERE id = ? AND user_id = ?").get(req.params.id, req.auth.user_id);
+      if (!conversation) return false;
+      // A connected agent keeps this runtime history ephemeral after its saved chat is deleted.
+      db.prepare("UPDATE voice_sessions SET conversation_id = NULL WHERE user_id = ? AND conversation_id = ?").run(req.auth.user_id, conversation.id);
+      db.prepare("DELETE FROM conversations WHERE id = ? AND user_id = ?").run(conversation.id, req.auth.user_id);
+      return true;
+    });
+    if (!remove()) return res.status(404).json({ error: "Conversation not found" });
+    res.status(204).end();
+  });
   app.post("/api/conversations/save", requireOrigin, requireAuth, requireCsrf, (req, res) => {
     const voiceSessionId = req.body?.voiceSessionId;
     const voice = db.prepare("SELECT * FROM voice_sessions WHERE id = ? AND user_id = ? AND revoked_at IS NULL AND expires_at > ?").get(voiceSessionId, req.auth.user_id, timestamp());
