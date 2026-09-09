@@ -98,7 +98,7 @@ Check the web service with `curl http://127.0.0.1:8088/health` and follow the cu
 
 Required deployment settings include `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `PUBLIC_UI_HOST`, `PUBLIC_RTC_HOST`, `PUBLIC_TURN_HOST`, `QWEN_BASE_URL`, `QWEN_API_KEY`, `KAGI_API_KEY`, `SESSION_SECRET`, and `INTERNAL_AGENT_SECRET`. Generate the two authentication secrets with `openssl rand -base64 48`. The Compose file fails clearly when required values are absent. `KAGI_API_KEY` is only needed because the current agent enables Kagi MCP at startup.
 
-The Whisper model, Qwen model, Kokoro voice, timezone, VAD thresholds, and interruption settings are all documented in `.env.sample` and can be adjusted without rebuilding the image.
+The Whisper model, Qwen model, Kokoro voice, timezone, VAD thresholds, and interruption settings are all documented in `.env.sample` and can be adjusted without rebuilding the image. `INTERRUPTION_TRANSCRIPTION_SETTLE_SECONDS=60` is the upper bound for preserving a provisional interruption while a CPU streaming-Whisper final is pending; keep it at least as large as `WHISPER_WS_FINALIZATION_SECONDS`. `INTERRUPTION_CONFIRM_FINAL_ONLY=true` prevents interim text from permanently cancelling speech.
 
 ## Streaming Whisper
 
@@ -194,7 +194,11 @@ Port `7880` is also published for LiveKit signaling/API. Confirm public DNS, rev
 
 ## iOS, iPad, And Safari
 
-The UI uses `100dvh`, safe-area padding, plain browser controls, `playsInline`, and a user gesture before audio starts. It requests echo cancellation, noise suppression, automatic gain control, and browser voice isolation where available. Test on the target iPad/Safari version because media-autoplay and Bluetooth behavior vary by OS release.
+The UI uses `100dvh`, safe-area padding, plain browser controls, `playsInline`, and a user gesture before audio starts. It requests echo cancellation, noise suppression, automatic gain control, and browser voice isolation where available. During an authenticated active voice session it uses the standard Screen Wake Lock API, the supported browser strategy for preventing screen sleep. It releases that lock when the session ends.
+
+On `visibilitychange`, `freeze`, `resume`, `pageshow`, LiveKit reconnect, and local-audio-silence events, the UI shows **Reconnecting...** or **Restoring microphone...**, reacquires the Wake Lock, verifies the microphone track, and re-publishes it through LiveKit without adding duplicate microphone tracks. If the transport cannot reconnect, it ends the old authenticated session and creates a fresh authenticated LiveKit session. Voice-session expiry still follows `VOICE_SESSION_TTL_MINUTES`.
+
+Locked/backgrounded iOS microphone capture is platform-dependent and is not guaranteed by a web application, even with Wake Lock. Test the target iPhone/iPad, Safari version, car integration, and Bluetooth device because media-autoplay and Bluetooth behavior vary by OS release. A native iOS client is the future option when reliable background capture is required.
 
 ## VAD And Interruption Tuning
 
@@ -209,9 +213,13 @@ Default VAD values:
 
 Default interruption values:
 
-- `INTERRUPTION_MIN_DURATION=0.50`
-- `INTERRUPTION_MIN_WORDS=1`
+- `INTERRUPTION_MIN_DURATION=0.40`
+- `INTERRUPTION_MIN_WORDS=0`
 - `FALSE_INTERRUPTION_TIMEOUT=0.80`
+- `INTERRUPTION_TRANSCRIPTION_SETTLE_SECONDS=60`
+- `INTERRUPTION_CONFIRM_FINAL_ONLY=true`
+
+LiveKit's native two-phase handling uses Silero VAD only to provisionally pause playout. It resumes that paused handle after `FALSE_INTERRUPTION_TIMEOUT` when no committed turn appears, and permanently cancels it only when a non-empty FINAL STT transcript (or a committed reply turn) arrives. The tracker emits compact `INTERRUPTION candidate`, `waiting_for_transcription`, `confirmed`, `false`, `confirmation_timeout`, `speech_cancelled`, and `speech_resumed` diagnostics without logging transcript contents. Empty or interim results do not cancel speech. Finalized user turns and assistant turns that actually played are the only messages eligible for saved-chat persistence; provisional, empty, duplicated, and interrupted tails are excluded.
 
 Increase activation threshold or minimum speech duration to reject more noise. Keep short-utterance testing in mind when tuning: commands such as "stop", "no", and "wait" must still be recognized. The same configured Silero VAD settings are used by the streaming STT gate and AgentSession so speech gating and barge-in use consistent settings. The adapter does not submit silent frames to Whisper.
 
@@ -226,7 +234,7 @@ The browser consumes `lk.transcription` incrementally rather than waiting for th
 ## Troubleshooting
 
 - `docker compose config --quiet` verifies environment interpolation and Compose syntax without exposing values.
-- `docker compose logs -f voice-agent` shows startup VAD/interruption settings, effective streaming/temperature/VAD-filter configuration, LiveKit registration, and compact STT segment metrics including first-interim latency.
+- `docker compose logs -f voice-agent` shows startup VAD/interruption settings, effective streaming/temperature/VAD-filter configuration, LiveKit registration, compact STT segment metrics, and compact `INTERRUPTION` state transitions (without transcript content).
 - If live transcription fails, set `WHISPER_STREAMING_ENABLED=false` and recreate only `voice-agent` to return to the known HTTP fallback while inspecting Whisper service logs.
 - `curl http://127.0.0.1:8088/health` checks the web UI service.
 - Verify `/v1/models` on the configured Qwen endpoint from the Docker host if the agent cannot answer.
@@ -250,7 +258,7 @@ Use HTTPS at the reverse proxy for the web UI and ensure it forwards the origina
 
 ## Development
 
-Run `python -m compileall -q app` and `python -m unittest discover -s test -v` from `source/voice-agent` for syntax and streaming-adapter checks. Run `npm test`, `node --check public/app.js`, and `node --check server.mjs` from `source/web-ui`. Rebuild the custom images after source changes.
+Run `python -m compileall -q app` and `python -m unittest discover -s test -v` from `source/voice-agent` for syntax, interruption-state, and streaming-adapter checks. Run `npm test`, `node --check public/app.js`, `node --check public/voice-session.js`, and `node --check server.mjs` from `source/web-ui`. Rebuild the custom images after source changes.
 
 ## Contributing
 

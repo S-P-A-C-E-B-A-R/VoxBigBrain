@@ -24,9 +24,11 @@ class Config:
     vad_min_speech_duration: float = float(os.getenv("VAD_MIN_SPEECH_DURATION", "0.20"))
     vad_min_silence_duration: float = float(os.getenv("VAD_MIN_SILENCE_DURATION", "0.50"))
     vad_prefix_padding_duration: float = float(os.getenv("VAD_PREFIX_PADDING_DURATION", "0.20"))
-    interruption_min_duration: float = float(os.getenv("INTERRUPTION_MIN_DURATION", "0.50"))
-    interruption_min_words: int = int(os.getenv("INTERRUPTION_MIN_WORDS", "1"))
+    interruption_min_duration: float = float(os.getenv("INTERRUPTION_MIN_DURATION", "0.40"))
+    interruption_min_words: int = int(os.getenv("INTERRUPTION_MIN_WORDS", "0"))
     false_interruption_timeout: float = float(os.getenv("FALSE_INTERRUPTION_TIMEOUT", "0.80"))
+    interruption_transcription_settle_seconds: float = float(os.getenv("INTERRUPTION_TRANSCRIPTION_SETTLE_SECONDS", "60.0"))
+    interruption_confirm_final_only: bool = os.getenv("INTERRUPTION_CONFIRM_FINAL_ONLY", "true").lower() == "true"
     web_internal_url: str = os.getenv("WEB_INTERNAL_URL", "http://web-ui:8080")
     internal_agent_secret: str = os.environ["INTERNAL_AGENT_SECRET"]
 

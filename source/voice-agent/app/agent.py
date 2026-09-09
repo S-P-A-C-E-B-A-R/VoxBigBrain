@@ -9,6 +9,7 @@ from livekit.agents.llm import ChatContext, ChatMessage
 from livekit.plugins import openai, silero
 
 from .config import config
+from .interruption import install_interruption_tracker
 from .prompts import current_time_context, instructions
 from .telemetry import install_tool_telemetry
 from .whisper_streaming import FasterWhisperLiveSTT, WhisperLiveOptions
@@ -85,14 +86,16 @@ async def voice_session(ctx: agents.JobContext):
         vad=vad,
         turn_handling={"interruption": {"mode": "vad", "min_duration": config.interruption_min_duration, "min_words": config.interruption_min_words, "false_interruption_timeout": config.false_interruption_timeout, "resume_false_interruption": True}},
     )
+    # Supervisory two-phase interruption confirmation. The framework keeps owning
+    # VAD pause/resume/cancel; the tracker only mirrors states, confirms on FINAL
+    # transcripts, and emits compact INTERRUPTION diagnostics.
+    tracker = install_interruption_tracker(session, settle_seconds=config.interruption_transcription_settle_seconds, confirm_final_only=config.interruption_confirm_final_only)
     @session.on("conversation_item_added")
     def persist_final_message(event) -> None:
         item = event.item
-        if not isinstance(item, ChatMessage) or item.role not in ("user", "assistant") or item.interrupted:
+        if not isinstance(item, ChatMessage) or not tracker.should_persist(item):
             return
         content = item.text_content
-        if not content:
-            return
         async def persist() -> None:
             try:
                 async with aiohttp.ClientSession(headers=headers) as http:
@@ -114,7 +117,7 @@ if __name__ == "__main__":
         "Starting llm-voice; Kagi MCP enabled; timezone=%s; "
         "vad activation_threshold=%.2f min_speech_duration=%.2fs "
         "min_silence_duration=%.2fs prefix_padding_duration=%.2fs; "
-        "interruption min_duration=%.2fs min_words=%d false_timeout=%.2fs; whisper streaming=%s temperature=%.1f vad_filter=%s",
+        "interruption min_duration=%.2fs min_words=%d false_timeout=%.2fs settle=%.1fs confirm_final_only=%s; whisper streaming=%s temperature=%.1f vad_filter=%s",
         config.timezone,
         config.vad_activation_threshold,
         config.vad_min_speech_duration,
@@ -123,6 +126,8 @@ if __name__ == "__main__":
         config.interruption_min_duration,
         config.interruption_min_words,
         config.false_interruption_timeout,
+        config.interruption_transcription_settle_seconds,
+        config.interruption_confirm_final_only,
         config.whisper_streaming_enabled,
         config.whisper_temperature,
         config.whisper_vad_filter,

@@ -211,6 +211,7 @@ export function createApp(overrides = {}) {
   app.get("/styles.css", (_req, res) => res.sendFile(path.join(root, "public", "styles.css")));
   app.get("/", requirePageAuth, (_req, res) => res.sendFile(path.join(root, "public", "index.html")));
   app.get("/app.js", requireAuth, (_req, res) => res.sendFile(path.join(root, "public", "app.js")));
+  app.get("/voice-session.js", requireAuth, (_req, res) => res.sendFile(path.join(root, "public", "voice-session.js")));
   app.get("/livekit-client.js", requireAuth, (_req, res) => res.sendFile(path.join(root, "public", "livekit-client.js")));
   app.use((_req, res) => res.status(404).json({ error: "Not found" }));
   return { app, db };
