@@ -22,7 +22,7 @@ class Config:
     timezone: str = os.environ.get("LOCAL_TIMEZONE", "America/New_York")
     vad_activation_threshold: float = float(os.getenv("VAD_ACTIVATION_THRESHOLD", "0.65"))
     vad_min_speech_duration: float = float(os.getenv("VAD_MIN_SPEECH_DURATION", "0.20"))
-    vad_min_silence_duration: float = float(os.getenv("VAD_MIN_SILENCE_DURATION", "0.50"))
+    vad_min_silence_duration: float = float(os.getenv("VAD_MIN_SILENCE_DURATION", "0.80"))
     vad_prefix_padding_duration: float = float(os.getenv("VAD_PREFIX_PADDING_DURATION", "0.20"))
     interruption_min_duration: float = float(os.getenv("INTERRUPTION_MIN_DURATION", "0.40"))
     interruption_min_words: int = int(os.getenv("INTERRUPTION_MIN_WORDS", "0"))

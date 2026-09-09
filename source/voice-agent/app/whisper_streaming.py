@@ -81,6 +81,8 @@ class _FasterWhisperLiveStream(stt.RecognizeStream):
         self._first_interim_at: float | None = None
         self._utterance_started_at: float | None = None
         self._interim_updates = 0
+        self._segment_sequence = 0
+        self._segment_id = ""
 
     def _finalization_wait(self) -> float:
         """How long to wait for the server's finalization flush before closing.
@@ -125,13 +127,14 @@ class _FasterWhisperLiveStream(stt.RecognizeStream):
             await self._finish_utterance()
             await self._start_utterance()
             await self._send_frames(event.frames)
-            self._event_ch.send_nowait(stt.SpeechEvent(type=stt.SpeechEventType.START_OF_SPEECH))
+            self._event_ch.send_nowait(stt.SpeechEvent(type=stt.SpeechEventType.START_OF_SPEECH, request_id=self._segment_id))
         elif event.type == vad.VADEventType.INFERENCE_DONE and event.speaking:
             await self._send_frames(event.frames)
         elif event.type == vad.VADEventType.END_OF_SPEECH:
             if self._ws is None:
                 return
-            self._event_ch.send_nowait(stt.SpeechEvent(type=stt.SpeechEventType.END_OF_SPEECH))
+            logger.info("TURN_TIMELINE t=%.6f event=stt_segment_end segment=%s", time.monotonic(), self._segment_id)
+            self._event_ch.send_nowait(stt.SpeechEvent(type=stt.SpeechEventType.END_OF_SPEECH, request_id=self._segment_id))
             # The server finalizes LocalAgreement after an idle interval. No silent PCM is sent.
             await self._finish_utterance()
 
@@ -141,6 +144,9 @@ class _FasterWhisperLiveStream(stt.RecognizeStream):
         self._first_interim_at = None
         self._utterance_started_at = time.monotonic()
         self._interim_updates = 0
+        self._segment_sequence += 1
+        self._segment_id = f"{id(self):x}-{self._segment_sequence}"
+        logger.info("TURN_TIMELINE t=%.6f event=stt_segment_start segment=%s", self._utterance_started_at, self._segment_id)
         timeout = aiohttp.ClientTimeout(total=None, sock_connect=10.0)
         self._http = aiohttp.ClientSession(timeout=timeout)
         self._ws = await self._http.ws_connect(self._options.websocket_url())
@@ -180,7 +186,7 @@ class _FasterWhisperLiveStream(stt.RecognizeStream):
             self._event_ch.send_nowait(self._speech_event(stt.SpeechEventType.INTERIM_TRANSCRIPT, text))
 
     def _speech_event(self, event_type: stt.SpeechEventType, text: str) -> stt.SpeechEvent:
-        return stt.SpeechEvent(type=event_type, alternatives=[stt.SpeechData(language=self._language, text=text)])
+        return stt.SpeechEvent(type=event_type, request_id=self._segment_id, alternatives=[stt.SpeechData(language=self._language, text=text)])
 
     async def _finish_utterance(self) -> None:
         if self._ws is None:
@@ -201,5 +207,13 @@ class _FasterWhisperLiveStream(stt.RecognizeStream):
             await http.close()
         if self._last_text:
             self._event_ch.send_nowait(self._speech_event(stt.SpeechEventType.FINAL_TRANSCRIPT, self._last_text))
+        logger.info(
+            "TURN_TIMELINE t=%.6f event=stt_finalized segment=%s audio_duration=%.2f chars=%d final=%s",
+            time.monotonic(),
+            self._segment_id,
+            self._speech_audio_duration,
+            len(self._last_text),
+            bool(self._last_text),
+        )
         first_interim = 0.0 if self._first_interim_at is None else self._first_interim_at - self._utterance_started_at
         logger.info("Whisper live segment audio_duration=%.2fs first_interim=%.2fs interim_updates=%d final=%s", self._speech_audio_duration, first_interim, self._interim_updates, bool(self._last_text))

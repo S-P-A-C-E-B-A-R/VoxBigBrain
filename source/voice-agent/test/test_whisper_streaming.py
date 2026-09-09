@@ -114,6 +114,8 @@ class WhisperStreamingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.received, [first_pcm])
         self.assertEqual([event.type.value for event in events if event.alternatives], ["interim_transcript", "final_transcript"])
         self.assertEqual(events[-1].alternatives[0].text, "hello")
+        self.assertTrue(events[-1].request_id)
+        self.assertEqual(events[-2].request_id, events[-1].request_id)
         self.assertEqual(self.query["temperature"], "0.0")
         self.assertEqual(self.query["vad_filter"], "false")
 
@@ -165,6 +167,9 @@ class WhisperStreamingTests(unittest.IsolatedAsyncioTestCase):
     def test_fallback_mode_initializes_stream_adapter(self):
         with patch.object(agent, "config", dataclasses.replace(agent.config, whisper_streaming_enabled=False)):
             self.assertFalse(agent.make_stt(FakeVAD()).capabilities.interim_results)
+
+    def test_turn_handling_disables_preemptive_generation(self):
+        self.assertFalse(agent.turn_handling_options()["preemptive_generation"]["enabled"])
 
     def test_live_options_only_use_supported_query_parameters(self):
         query = self.options.websocket_url().split("?", 1)[1]

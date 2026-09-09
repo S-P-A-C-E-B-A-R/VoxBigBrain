@@ -120,6 +120,14 @@ Silero remains the authoritative speech gate, turn detector, and interruption si
 
 Set `WHISPER_STREAMING_ENABLED=false` to restore the previous OpenAI-compatible HTTP STT wrapped in LiveKit `StreamAdapter`; Silero gating remains enabled in that rollback path.
 
+## Turn Commit Diagnostics
+
+VoxBigBrain normally uses its `FasterWhisperLiveSTT` WebSocket adapter, not the HTTP fallback. Each Silero-approved speech segment opens one faster-whisper WebSocket request, waits for the server's CPU-backed finalization response at segment end, then emits its final STT event. The adapter serializes its own requests: it finishes a pending segment before opening the next one. The fallback path is the non-streaming OpenAI-compatible `openai.STT` wrapped by LiveKit `StreamAdapter`, where each VAD-ended segment results in one `recognize()` request.
+
+LiveKit Agents 1.7.1 enables preemptive generation by default. In VAD turn-detection mode, its audio-recognition code can invoke that generation path as soon as a final STT fragment arrives, before normal endpointing completes. VoxBigBrain explicitly disables it with the 1.7.1-supported session option `turn_handling={"preemptive_generation": {"enabled": False}}`. No environment variable is used because production behavior should remain explicitly false.
+
+`TURN_TIMELINE` logs use a process-monotonic timestamp and omit transcript text. They cover VAD speech state, faster-whisper segment start/end/finalization and segment IDs, final/interim STT events, committed user and assistant items, speech-generation creation, and agent state changes. A natural pause can still produce multiple VAD/STT segments; the logs distinguish whether those finals became separate committed user turns. These diagnostics are intended to determine whether CPU STT latency or segmentation causes a split before changing VAD values.
+
 ## Docker Compose
 
 Build just the custom images:
@@ -216,7 +224,7 @@ Default VAD values:
 
 - `VAD_ACTIVATION_THRESHOLD=0.65`
 - `VAD_MIN_SPEECH_DURATION=0.20`
-- `VAD_MIN_SILENCE_DURATION=0.50`
+- `VAD_MIN_SILENCE_DURATION=0.80`
 - `VAD_PREFIX_PADDING_DURATION=0.20`
 
 Default interruption values:
@@ -229,7 +237,7 @@ Default interruption values:
 
 LiveKit's native two-phase handling uses Silero VAD only to provisionally pause playout. It resumes that paused handle after `FALSE_INTERRUPTION_TIMEOUT` when no committed turn appears, and permanently cancels it only when a non-empty FINAL STT transcript (or a committed reply turn) arrives. The tracker emits compact `INTERRUPTION candidate`, `waiting_for_transcription`, `confirmed`, `false`, `confirmation_timeout`, `speech_cancelled`, and `speech_resumed` diagnostics without logging transcript contents. Empty or interim results do not cancel speech. Finalized user turns and assistant turns that actually played are the only messages eligible for saved-chat persistence; provisional, empty, duplicated, and interrupted tails are excluded.
 
-Increase activation threshold or minimum speech duration to reject more noise. Keep short-utterance testing in mind when tuning: commands such as "stop", "no", and "wait" must still be recognized. The same configured Silero VAD settings are used by the streaming STT gate and AgentSession so speech gating and barge-in use consistent settings. The adapter does not submit silent frames to Whisper.
+Increase activation threshold or minimum speech duration to reject more noise. `VAD_MIN_SILENCE_DURATION=0.80` is sized to retain the observed roughly 0.75-second natural pause as one VAD segment; it adds 0.30 seconds to endpointing versus the previous default. Keep short-utterance testing in mind when tuning: commands such as "stop", "no", and "wait" must still be recognized. The same configured Silero VAD settings are used by the streaming STT gate and AgentSession so speech gating and barge-in use consistent settings. The adapter does not submit silent frames to Whisper.
 
 ## Kagi MCP And Tool Telemetry
 

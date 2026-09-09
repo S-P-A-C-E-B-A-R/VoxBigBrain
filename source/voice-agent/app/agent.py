@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 
 import aiohttp
 
@@ -53,6 +54,26 @@ def make_stt(speech_vad):
     return stt.StreamAdapter(stt=whisper_stt, vad=speech_vad)
 
 
+def turn_handling_options():
+    return {
+        "interruption": {
+            "mode": "vad",
+            "min_duration": config.interruption_min_duration,
+            "min_words": config.interruption_min_words,
+            "false_interruption_timeout": config.false_interruption_timeout,
+            "resume_false_interruption": True,
+        },
+        # LiveKit Agents 1.7.1 defaults this to True. Keep LLM generation behind
+        # completed endpointing while CPU Whisper finalization is still pending.
+        "preemptive_generation": {"enabled": False},
+    }
+
+
+def log_turn_timeline(event: str, **fields) -> None:
+    details = " ".join(f"{key}={value}" for key, value in sorted(fields.items()))
+    logger.info("TURN_TIMELINE t=%.6f event=%s%s", time.monotonic(), event, f" {details}" if details else "")
+
+
 @server.rtc_session(agent_name="llm-voice")
 async def voice_session(ctx: agents.JobContext):
     time_context = current_time_context(config.timezone)
@@ -84,15 +105,53 @@ async def voice_session(ctx: agents.JobContext):
         llm=openai.LLM(model=config.qwen_model, base_url=config.qwen_base_url, api_key=config.qwen_api_key),
         tts=openai.TTS(model=config.kokoro_model, voice=config.kokoro_voice, base_url=config.kokoro_base_url, api_key="not-needed", response_format="wav"),
         vad=vad,
-        turn_handling={"interruption": {"mode": "vad", "min_duration": config.interruption_min_duration, "min_words": config.interruption_min_words, "false_interruption_timeout": config.false_interruption_timeout, "resume_false_interruption": True}},
+        turn_handling=turn_handling_options(),
     )
     # Supervisory two-phase interruption confirmation. The framework keeps owning
     # VAD pause/resume/cancel; the tracker only mirrors states, confirms on FINAL
     # transcripts, and emits compact INTERRUPTION diagnostics.
     tracker = install_interruption_tracker(session, settle_seconds=config.interruption_transcription_settle_seconds, confirm_final_only=config.interruption_confirm_final_only)
+    @session.on("user_state_changed")
+    def log_user_state(event) -> None:
+        if event.new_state == "speaking":
+            log_turn_timeline("vad_speech_start", old=event.old_state)
+        elif event.old_state == "speaking":
+            log_turn_timeline("vad_speech_end", new=event.new_state)
+        else:
+            log_turn_timeline("user_state", new=event.new_state, old=event.old_state)
+
+    @session.on("user_input_transcribed")
+    def log_transcription(event) -> None:
+        log_turn_timeline(
+            "stt_final" if event.is_final else "stt_interim",
+            chars=len(event.transcript or ""),
+            segment=event.item_id or "-",
+        )
+
+    @session.on("agent_state_changed")
+    def log_agent_state(event) -> None:
+        log_turn_timeline("agent_state", new=event.new_state, old=event.old_state)
+
+    @session.on("speech_created")
+    def log_speech_created(event) -> None:
+        log_turn_timeline(
+            "llm_generation_created" if event.source == "generate_reply" else "speech_created",
+            source=event.source,
+            speech=event.speech_handle.id,
+            user_initiated=event.user_initiated,
+        )
+
     @session.on("conversation_item_added")
     def persist_final_message(event) -> None:
         item = event.item
+        if isinstance(item, ChatMessage):
+            log_turn_timeline(
+                "user_turn_committed" if item.role == "user" else "assistant_output_created",
+                chars=len(item.text_content or ""),
+                item=item.id,
+                interrupted=item.interrupted,
+                role=item.role,
+            )
         if not isinstance(item, ChatMessage) or not tracker.should_persist(item):
             return
         content = item.text_content
@@ -117,7 +176,7 @@ if __name__ == "__main__":
         "Starting llm-voice; Kagi MCP enabled; timezone=%s; "
         "vad activation_threshold=%.2f min_speech_duration=%.2fs "
         "min_silence_duration=%.2fs prefix_padding_duration=%.2fs; "
-        "interruption min_duration=%.2fs min_words=%d false_timeout=%.2fs settle=%.1fs confirm_final_only=%s; whisper streaming=%s temperature=%.1f vad_filter=%s",
+        "interruption min_duration=%.2fs min_words=%d false_timeout=%.2fs settle=%.1fs confirm_final_only=%s; preemptive_generation=false; whisper streaming=%s temperature=%.1f vad_filter=%s",
         config.timezone,
         config.vad_activation_threshold,
         config.vad_min_speech_duration,
